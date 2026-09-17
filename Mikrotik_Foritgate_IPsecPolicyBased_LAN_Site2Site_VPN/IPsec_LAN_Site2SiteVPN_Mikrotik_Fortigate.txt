@@ -1,0 +1,183 @@
+Configure LAN Site2Site IPsec-Policy Based VPN on Mikrotik Router V.7.22.1 and Fortigate Firewall V.7.0.9
+
+Reminder : "Do not copy paste directly instead of spend alots of time wonder why it not working when paste 
+		speding time input each a line once at time!!!!!!!!!!!!!!!!!"
+
++ Scenario Ex:
+ - Fortigate
+	+ WAN IP : 10.10.8.1/30 - Interface = port8-WAN
+        + LAN IP : 172.16.7.1/24 - Interface = port7-LAN
+ - Mikrotik 
+	+ WAN IP : 10.10.8.2/30 - Interface = ether8-WAN
+	+ LAN IP : 192.168.7.1/24 - Interface = ether7-LAN
+
+Note : Before Config it Make Sure both Intermedia Can reach each other Public IP
+
++ Foritgate CLI Configure :
+
+conf vpn ipsec phase1-interface
+edit "Mikrotik-Tunnel-P1"
+set int port8
+set ike-version 2
+set local-gw 10.10.8.1
+set remote-gw 10.10.8.2
+set net-device enable
+set keylife 28800
+set peertype any
+set proposal des-sha256
+set dpd on-idle
+set dhgrp 14
+set dpd-retryinterval 10
+set psksecret MySecurePassword123
+show ------- (Comfirm it output like you assign)
+next
+end
+
+
+conf vpn ipsec phase2-interface
+edit "Mikrotik-Tunnel-P2"
+set phase1name "Mikrotik-Tunnel-P1"
+set proposal des-sha256
+set dhgrp 14
+set keylifeseconds 3600
+set src-subnet 172.16.7.0 255.255.255.0
+set dst-subnet 192.168.7.0 255.255.255.0
+show ------- (Confirm it output like you assign)
+next
+end
+
+
+conf firewall address
+edit "Fortigate-LAN"
+set subnet 172.16.7.0 255.255.255.0
+next
+edit "Mikrotik-LAN"
+set subnet 192.168.7.0 255.255.255.0
+next
+end
+
+conf firewall policy
+edit 0
+set name "Out-To-Mikrotik"
+set srcintf port7
+set dstintf Mikrotik-Tunnel-P1
+set srcaddr Fortigate-LAN
+set dstaddr Mikrotik-LAN
+set action accept
+set schedule always
+set service ALL
+next
+edit 0
+set name "In-To-Mikrotik"
+set srcintf Mikrotik-Tunnel-P1
+set dstintf port7
+set srcaddr Mikrotik-LAN
+set dstaddr Fortigate-LAN
+set action accept
+set schedule always
+set service ALL
+next
+show ------- (Confirm your rule that had assign)
+
+
+conf router static
+edit 1
+set dst 192.168.7.0 255.255.255.0
+set device Mikrotik-Tunnel-P1
+
++ Mikrotik CLI Configure :
+
+ip/ipsec/profile
+
+add name="Fortigate-Profile" enc-algorithm=aes-128,des hash-algorithm=sha256
+dh-group=modp2048 nat-traversal=yes dpd-interval=10s dpd-maximum-failures=5
+lifetime=8h
+
+ip/ipsec/proposal
+
+add name="Fortigate-Proposal" auth-algorithms=sha256 enc-algorithms=des
+lifetime=1h pfs-group=modp2048
+
+ip/ipsec/peer
+
+add name="Fortigate-Peer" profile=Fortigate-Profile address=10.10.8.1 
+exchange-mode=ike2
+
+ip/ipsec/identity
+
+add peer=Fortigate-Peer auth-method=pre-shared-key secret=MySecurePassword123
+generate-policy=no
+
+ip/ipsec/policy
+
+add peer=Fortigate-Peer proposal=Fortigate-Proposal src-address=192.168.7.0/24
+dst-address=172.16.7.0/24 tunnel=yes level=require action=encrypt
+
+ip/firewall/filter
+
+add chain=input dst-port=500,4500 protocol=udp action=accept comment="Allowing IKE/NAT-T"
+
+add chain=input protocol=ipsec-esp action=accept comment="Allowing ESP"
+
+ip/route
+
+add dst-address=172.16.7.0/24 gateway=10.10.8.1 comment="To-Fortigate-LAN"
+
++ Testing Connection Establish
+
+	- Mikrotik side
+
+ip/ipsec/active-peers print detail
+
+Flags: R - responder; N - natt-peer
+ 0 R  id="10.10.8.1" local-address=10.10.8.2 remote-address=10.10.8.1
+      state=established side=responder uptime=4h54m54s last-seen=7s ph2-total=1
+      spii="f3b6adb369a4f798" spir="b1fb733735530206" spii="f3b6adb369a4f798"
+      spir="b1fb733735530206"
+--------------(Make Sure you see the Flag "R" meaning phase1 is responed)
+
+ip/ipsec/install-sa print detail
+
++ Before Test Ping output 
+
+Flags: S - seen-traffic; H - hw-aead; A - AH, E - ESP
+ 0   E spi=0x491327F src-address=10.10.8.1 dst-address=10.10.8.2 state=mature
+       auth-algorithm=sha256 enc-algorithm=des enc-key-size=64
+       auth-key="911196562944c2ba9604a903ecd3147c5283c23c02692244db7234242c5e603
+       enc-key="c312389e37348a38" add-lifetime=48m8s/1h10s replay=128
+
+ 1   E spi=0xA7DE51D8 src-address=10.10.8.2 dst-address=10.10.8.1 state=mature
+       auth-algorithm=sha256 enc-algorithm=des enc-key-size=64
+       auth-key="2890ed8fe784b792f645cd7ce03da5f17cdf393d6d6816825271cee8f45dd13
+       enc-key="61f5fd385219f94e" add-lifetime=48m8s/1h10s replay=128
+---------------(You will see only Flag "E" meaning it will Encapsulating Security Payload)
+
++ After Testing ping between LAN Client Each Side output will be like this (Testing from Computer Client)
+
+Flags: S - seen-traffic; H - hw-aead; A - AH, E - ESP
+ 0 S E spi=0x491327F src-address=10.10.8.1 dst-address=10.10.8.2 state=mature
+       auth-algorithm=sha256 enc-algorithm=des enc-key-size=64
+       auth-key="911196562944c2ba9604a903ecd3147c5283c23c02692244db7234242c5e603
+       enc-key="c312389e37348a38" addtime=sep/17/2026 07:23:59 expires-in=51m6s
+       add-lifetime=48m8s/1h10s current-bytes=672 current-packets=8 replay=128
+
+ 1 S E spi=0xA7DE51D8 src-address=10.10.8.2 dst-address=10.10.8.1 state=mature
+       auth-algorithm=sha256 enc-algorithm=des enc-key-size=64
+       auth-key="2890ed8fe784b792f645cd7ce03da5f17cdf393d6d6816825271cee8f45dd13
+       enc-key="61f5fd385219f94e" addtime=sep/17/2026 07:23:59 expires-in=51m6s
+       add-lifetime=48m8s/1h10s current-bytes=672 current-packets=8 replay=128
+-------------(You will see Flag "S" after it meaning it had seen-traffic of package)
+
+
+--------------[After Testing it you not see any similar to this output meaning you 
+config something wrong go check it again in other case it might be block by 
+Firewall]--------------
+
+
+Troubleshoot Structure : 1 -> 5
+
+Layer 5: Application/ICMP reachability     ← what the user complains about
+Layer 4: Firewall policy matching           ← we just fixed this twice
+Layer 3: Routing (does the packet know where to go)
+Layer 2: IPsec SA (is it actually encrypting/decrypting)
+Layer 1: IKE/Phase 1 (is the tunnel even up)
